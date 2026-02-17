@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional
 BASE_URL = "https://straico-submit.preview.emergentagent.com/api"
 
 # Test data
-TEST_EMAIL = "test_user_123@example.com"
+TEST_EMAIL = "testuser123@gmail.com"  # Use a more standard email format
 TEST_PASSWORD = "password123"
 
 class BackendTester:
