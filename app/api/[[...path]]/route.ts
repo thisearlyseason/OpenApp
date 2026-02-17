@@ -433,6 +433,16 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       }
       const sanitizedPrompt = validation.prompt!
       
+      // Check if user is admin
+      const userIsAdmin = isAdmin(user.email)
+      
+      // Model selection (admin only)
+      let selectedModel = DEFAULT_MODEL
+      if (userIsAdmin && body.model && typeof body.model === 'string') {
+        const modelKey = body.model.toLowerCase()
+        selectedModel = AVAILABLE_MODELS[modelKey] || body.model
+      }
+      
       const serverClient = getServerClient()
       
       // Fetch current credits
@@ -448,24 +458,26 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       
       const currentCredits = safeParseInt(profile.credits_remaining, 0)
       
-      // PRE-CHECK: Ensure minimum credits available (use MAX_TOKENS as estimate)
-      if (currentCredits < MIN_TOKENS_CHARGE) {
-        return errorResponse('Insufficient credits', 402, { credits_remaining: currentCredits })
-      }
-      
-      // PRE-DEDUCT: Reserve MAX_TOKENS before calling API (prevents race condition)
-      const reserveAmount = Math.min(MAX_TOKENS, currentCredits)
-      const { data: preDeductResult, error: preDeductError } = await serverClient
-        .from('profiles')
-        .update({ credits_remaining: currentCredits - reserveAmount })
-        .eq('id', user.id)
-        .eq('credits_remaining', currentCredits) // Atomic: only if unchanged
-        .select('credits_remaining')
-        .single()
-      
-      if (preDeductError || !preDeductResult) {
-        // Race condition: credits changed, retry or fail
-        return errorResponse('Credits verification failed. Please try again.', 409)
+      // Skip credit checks for admin users
+      if (!userIsAdmin) {
+        // PRE-CHECK: Ensure minimum credits available
+        if (currentCredits < MIN_TOKENS_CHARGE) {
+          return errorResponse('Insufficient credits', 402, { credits_remaining: currentCredits })
+        }
+        
+        // PRE-DEDUCT: Reserve MAX_TOKENS before calling API
+        const reserveAmount = Math.min(MAX_TOKENS, currentCredits)
+        const { data: preDeductResult, error: preDeductError } = await serverClient
+          .from('profiles')
+          .update({ credits_remaining: currentCredits - reserveAmount })
+          .eq('id', user.id)
+          .eq('credits_remaining', currentCredits)
+          .select('credits_remaining')
+          .single()
+        
+        if (preDeductError || !preDeductResult) {
+          return errorResponse('Credits verification failed. Please try again.', 409)
+        }
       }
       
       // Call Straico API with strict timeout
@@ -473,7 +485,6 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS)
       
       let straicoData: any
-      let apiSuccess = false
       
       try {
         const straicoResponse = await fetch(`${STRAICO_API_BASE_URL}/prompt/completion`, {
