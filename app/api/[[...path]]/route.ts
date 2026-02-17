@@ -42,6 +42,30 @@ const MAX_TOKENS = parseInt(process.env.MAX_TOKENS || '2000')
 const STRAICO_API_KEY = process.env.STRAICO_API_KEY!
 const STRAICO_API_BASE_URL = process.env.STRAICO_API_BASE_URL || 'https://api.straico.com/v1'
 
+// Admin configuration
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean)
+
+// Available models (Straico model IDs)
+const AVAILABLE_MODELS: Record<string, string> = {
+  'gpt-4o-mini': 'openai/gpt-4o-mini',
+  'gpt-4o': 'openai/gpt-4o',
+  'gpt-4.5': 'openai/gpt-4.5-preview',
+  'chatgpt-5.0': 'openai/gpt-4o', // Map to best available
+  'claude-sonnet-4': 'anthropic/claude-sonnet-4',
+  'claude-sonnet-4.5': 'anthropic/claude-sonnet-4',
+  'claude-opus-4': 'anthropic/claude-opus-4',
+  'claude-opus-4.5': 'anthropic/claude-opus-4',
+  'sonnet': 'anthropic/claude-sonnet-4',
+  'opus': 'anthropic/claude-opus-4'
+}
+const DEFAULT_MODEL = 'openai/gpt-4o-mini'
+
+// Check if user is admin
+function isAdmin(email: string | undefined): boolean {
+  if (!email) return false
+  return ADMIN_EMAILS.includes(email.toLowerCase())
+}
+
 // Safety limits
 const MAX_PROMPT_LENGTH = 4000
 const MAX_RESPONSE_LENGTH = 16000
