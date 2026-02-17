@@ -302,7 +302,6 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
           email: data.user.email,
           credits_remaining: INITIAL_CREDITS
         }, { onConflict: 'id', ignoreDuplicates: true })
-        }
       }
       
       return handleCORS(NextResponse.json({
@@ -314,40 +313,41 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
     
     // Login
     if (route === '/auth/login' && method === 'POST') {
-      const body = await request.json()
+      let body: Record<string, unknown>
+      try {
+        body = await request.json()
+      } catch {
+        return errorResponse('Invalid JSON body', 400)
+      }
+      
       const { email, password } = body
       
       if (!email || !password) {
-        return handleCORS(NextResponse.json(
-          { error: 'Email and password are required' },
-          { status: 400 }
-        ))
+        return errorResponse('Email and password are required', 400)
       }
       
-      const supabase = createAnonClient()
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+      if (!isValidEmail(email)) {
+        return errorResponse('Invalid email format', 400)
+      }
+      
+      const supabase = getAnonClient()
+      const { data, error } = await supabase.auth.signInWithPassword({ 
+        email: String(email).toLowerCase().trim(), 
+        password: String(password)
+      })
       
       if (error) {
-        return handleCORS(NextResponse.json({ error: error.message }, { status: 401 }))
+        return errorResponse('Invalid credentials', 401)
       }
       
-      // Ensure user has profile
+      // Ensure user has profile (upsert to handle edge cases)
       if (data.user) {
-        const serverClient = createServerClient()
-        const { data: profileData } = await serverClient
-          .from('profiles')
-          .select('credits_remaining')
-          .eq('id', data.user.id)
-          .single()
-        
-        if (!profileData) {
-          await serverClient.from('profiles').insert({
-            id: data.user.id,
-            email: data.user.email,
-            credits_remaining: INITIAL_CREDITS,
-            created_at: new Date().toISOString()
-          })
-        }
+        const serverClient = getServerClient()
+        await serverClient.from('profiles').upsert({
+          id: data.user.id,
+          email: data.user.email,
+          credits_remaining: INITIAL_CREDITS
+        }, { onConflict: 'id', ignoreDuplicates: true })
       }
       
       return handleCORS(NextResponse.json({
