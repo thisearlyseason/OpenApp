@@ -577,14 +577,18 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       // Cap at reasonable maximum
       tokensUsed = Math.min(tokensUsed, 100000)
       
-      // Calculate final credits (refund unused reservation)
-      const finalCredits = Math.max(0, currentCredits - tokensUsed)
+      let finalCredits = currentCredits
       
-      // Update to actual deduction (atomic)
-      await serverClient
-        .from('profiles')
-        .update({ credits_remaining: finalCredits })
-        .eq('id', user.id)
+      // Only deduct credits for non-admin users
+      if (!userIsAdmin) {
+        finalCredits = Math.max(0, currentCredits - tokensUsed)
+        
+        // Update to actual deduction
+        await serverClient
+          .from('profiles')
+          .update({ credits_remaining: finalCredits })
+          .eq('id', user.id)
+      }
       
       // Insert record into prompt_logs
       await serverClient.from('prompt_logs').insert({
@@ -598,8 +602,10 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       return handleCORS(NextResponse.json({
         response: responseText,
         tokens_used: tokensUsed,
-        credits_remaining: finalCredits,
-        requests_remaining: rateLimit.remaining
+        credits_remaining: userIsAdmin ? 'unlimited' : finalCredits,
+        requests_remaining: userIsAdmin ? 'unlimited' : rateLimit.remaining,
+        model: selectedModel,
+        is_admin: userIsAdmin
       }))
     }
 
