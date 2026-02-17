@@ -1,4 +1,4 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js'
+import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 
 // Types
@@ -6,40 +6,38 @@ interface RouteParams {
   params: { path?: string[] }
 }
 
-// Singleton Supabase clients (connection pooling)
-let serverClientInstance: SupabaseClient | null = null
-let anonClientInstance: SupabaseClient | null = null
-
-function getServerClient(): SupabaseClient {
-  if (!serverClientInstance) {
-    serverClientInstance = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-      {
-        auth: {
-          autoRefreshToken: false,
-          persistSession: false
-        }
-      }
-    )
+// Create fresh Supabase clients (serverless compatible)
+function getServerClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  
+  if (!url || !key) {
+    throw new Error('Missing Supabase server credentials')
   }
-  return serverClientInstance
+  
+  return createClient(url, key, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  })
 }
 
-function getAnonClient(): SupabaseClient {
-  if (!anonClientInstance) {
-    anonClientInstance = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    )
+function getAnonClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  
+  if (!url || !key) {
+    throw new Error('Missing Supabase anon credentials')
   }
-  return anonClientInstance
+  
+  return createClient(url, key)
 }
 
 // Constants
 const INITIAL_CREDITS = 100000
 const MAX_TOKENS = parseInt(process.env.MAX_TOKENS || '2000')
-const STRAICO_API_KEY = process.env.STRAICO_API_KEY!
+const STRAICO_API_KEY = process.env.STRAICO_API_KEY
 const STRAICO_API_BASE_URL = process.env.STRAICO_API_BASE_URL || 'https://api.straico.com/v1'
 
 // Admin configuration
