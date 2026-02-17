@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { createClient } from '@/lib/supabase/client'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -17,26 +18,22 @@ export default function LoginPage() {
     setLoading(true)
 
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
+      const supabase = createClient()
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
       })
 
-      const data = await res.json()
-
-      if (!res.ok) {
-        setError(data.error || 'Login failed')
+      if (error) {
+        setError(error.message)
         return
       }
 
-      if (data.session) {
-        localStorage.setItem('session', JSON.stringify(data.session))
-        localStorage.setItem('user', JSON.stringify(data.user))
-        router.push('/dashboard')
-      }
+      // Redirect to dashboard on success
+      router.push('/dashboard')
+      router.refresh()
     } catch (err) {
-      setError('Network error. Please try again.')
+      setError('An unexpected error occurred')
     } finally {
       setLoading(false)
     }

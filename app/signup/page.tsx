@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { createClient } from '@/lib/supabase/client'
 
 export default function SignupPage() {
   const router = useRouter()
@@ -31,28 +32,32 @@ export default function SignupPage() {
     setLoading(true)
 
     try {
-      const res = await fetch('/api/auth/signup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
+      const supabase = createClient()
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
       })
 
-      const data = await res.json()
-
-      if (!res.ok) {
-        setError(data.error || 'Signup failed')
+      if (error) {
+        setError(error.message)
         return
       }
 
+      // If email confirmation is disabled, user will be logged in
       if (data.session) {
-        localStorage.setItem('session', JSON.stringify(data.session))
-        localStorage.setItem('user', JSON.stringify(data.user))
+        // Initialize credits via API
+        await fetch('/api/auth/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        })
         router.push('/dashboard')
+        router.refresh()
       } else {
-        setSuccess('Account created! Please check your email to confirm, then login.')
+        setSuccess('Check your email to confirm your account, then login.')
       }
     } catch (err) {
-      setError('Network error. Please try again.')
+      setError('An unexpected error occurred')
     } finally {
       setLoading(false)
     }
