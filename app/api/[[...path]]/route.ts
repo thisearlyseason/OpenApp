@@ -428,9 +428,9 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       }
       const sanitizedPrompt = validation.prompt!
       
-      const serverClient = createServerClient()
+      const serverClient = getServerClient()
       
-      // Fetch current credits with row-level lock simulation
+      // Fetch current credits
       const { data: profile, error: profileError } = await serverClient
         .from('profiles')
         .select('credits_remaining')
@@ -441,10 +441,26 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
         return errorResponse('Profile not found', 404)
       }
       
-      // Ensure credits is a valid number and > 0
       const currentCredits = safeParseInt(profile.credits_remaining, 0)
-      if (currentCredits <= 0) {
-        return errorResponse('Insufficient credits', 402, { credits_remaining: 0 })
+      
+      // PRE-CHECK: Ensure minimum credits available (use MAX_TOKENS as estimate)
+      if (currentCredits < MIN_TOKENS_CHARGE) {
+        return errorResponse('Insufficient credits', 402, { credits_remaining: currentCredits })
+      }
+      
+      // PRE-DEDUCT: Reserve MAX_TOKENS before calling API (prevents race condition)
+      const reserveAmount = Math.min(MAX_TOKENS, currentCredits)
+      const { data: preDeductResult, error: preDeductError } = await serverClient
+        .from('profiles')
+        .update({ credits_remaining: currentCredits - reserveAmount })
+        .eq('id', user.id)
+        .eq('credits_remaining', currentCredits) // Atomic: only if unchanged
+        .select('credits_remaining')
+        .single()
+      
+      if (preDeductError || !preDeductResult) {
+        // Race condition: credits changed, retry or fail
+        return errorResponse('Credits verification failed. Please try again.', 409)
       }
       
       // Call Straico API with strict timeout
@@ -452,6 +468,7 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS)
       
       let straicoData: any
+      let apiSuccess = false
       
       try {
         const straicoResponse = await fetch(`${STRAICO_API_BASE_URL}/prompt/completion`, {
@@ -473,12 +490,24 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
         if (!straicoResponse.ok) {
           const errorText = await straicoResponse.text().catch(() => 'Unknown error')
           console.error('Straico API error:', straicoResponse.status, errorText)
+          // REFUND on failure
+          await serverClient
+            .from('profiles')
+            .update({ credits_remaining: currentCredits })
+            .eq('id', user.id)
           return errorResponse('AI service error', 502)
         }
         
         straicoData = await straicoResponse.json()
+        apiSuccess = true
       } catch (fetchError: any) {
         clearTimeout(timeoutId)
+        // REFUND on failure
+        await serverClient
+          .from('profiles')
+          .update({ credits_remaining: currentCredits })
+          .eq('id', user.id)
+        
         if (fetchError.name === 'AbortError') {
           return errorResponse('Request timeout - AI service took too long', 504)
         }
@@ -497,13 +526,18 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       }
       
       if (!responseText || responseText.trim().length === 0) {
+        // REFUND on empty response
+        await serverClient
+          .from('profiles')
+          .update({ credits_remaining: currentCredits })
+          .eq('id', user.id)
         return errorResponse('No response from AI', 502)
       }
       
       // Truncate response to max length for safety
       responseText = truncateResponse(responseText)
       
-      // Calculate tokens used (use API value or estimate)
+      // Calculate actual tokens used
       let tokensUsed = safeParseInt(
         straicoData.data?.usage?.total_tokens 
         || straicoData.data?.words 
@@ -511,80 +545,39 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
         0
       )
       
+      // If API doesn't return usage, charge MAX_TOKENS (conservative)
       if (tokensUsed <= 0) {
-        // Estimate: 1 token ≈ 4 characters
-        const inputTokens = Math.ceil(sanitizedPrompt.length / 4)
-        const outputTokens = Math.ceil(responseText.length / 4)
-        tokensUsed = inputTokens + outputTokens
+        tokensUsed = MAX_TOKENS
       }
       
-      // Ensure tokens is positive and reasonable
-      tokensUsed = Math.min(Math.max(1, tokensUsed), 100000)
+      // Apply minimum charge
+      tokensUsed = Math.max(MIN_TOKENS_CHARGE, tokensUsed)
       
-      // ATOMIC credits deduction - server-side only, prevent negative
-      // Re-fetch to ensure we have latest value before deduction
-      const { data: freshProfile, error: freshError } = await serverClient
+      // Cap at reasonable maximum
+      tokensUsed = Math.min(tokensUsed, 100000)
+      
+      // Calculate final credits (refund unused reservation)
+      const finalCredits = Math.max(0, currentCredits - tokensUsed)
+      
+      // Update to actual deduction (atomic)
+      await serverClient
         .from('profiles')
-        .select('credits_remaining')
+        .update({ credits_remaining: finalCredits })
         .eq('id', user.id)
-        .single()
-      
-      if (freshError || !freshProfile) {
-        return errorResponse('Failed to verify credits', 500)
-      }
-      
-      const latestCredits = safeParseInt(freshProfile.credits_remaining, 0)
-      
-      // Prevent negative credits - ensure we have enough
-      if (latestCredits < tokensUsed) {
-        // Deduct only what's available, set to 0
-        const { error: updateError } = await serverClient
-          .from('profiles')
-          .update({ credits_remaining: 0 })
-          .eq('id', user.id)
-          .gte('credits_remaining', 0) // Extra safety: only if >= 0
-        
-        if (updateError) {
-          console.error('Failed to update credits:', updateError)
-        }
-        
-        return errorResponse('Insufficient credits for this request', 402, { 
-          credits_remaining: 0,
-          tokens_required: tokensUsed
-        })
-      }
-      
-      // Deduct credits atomically (server-side only)
-      const newCredits = Math.max(0, latestCredits - tokensUsed)
-      
-      const { error: updateError } = await serverClient
-        .from('profiles')
-        .update({ credits_remaining: newCredits })
-        .eq('id', user.id)
-        .gte('credits_remaining', tokensUsed) // Only update if sufficient credits
-      
-      if (updateError) {
-        console.error('Failed to update credits:', updateError)
-        // Don't fail the request, but log the issue
-      }
       
       // Insert record into prompt_logs
-      const { error: logError } = await serverClient.from('prompt_logs').insert({
+      await serverClient.from('prompt_logs').insert({
         user_id: user.id,
         prompt: sanitizedPrompt,
         response: responseText,
         tokens_used: tokensUsed
       })
       
-      if (logError) {
-        console.error('Failed to insert prompt log:', logError)
-      }
-      
       // Return success response
       return handleCORS(NextResponse.json({
         response: responseText,
         tokens_used: tokensUsed,
-        credits_remaining: newCredits,
+        credits_remaining: finalCredits,
         requests_remaining: rateLimit.remaining
       }))
     }
