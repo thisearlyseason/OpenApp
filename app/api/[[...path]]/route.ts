@@ -353,31 +353,42 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
         return errorResponse('Invalid email format', 400)
       }
       
-      const supabase = getAnonClient()
-      const { data, error } = await supabase.auth.signInWithPassword({ 
-        email: String(email).toLowerCase().trim(), 
-        password: String(password)
-      })
-      
-      if (error) {
-        return errorResponse('Invalid credentials', 401)
+      try {
+        const supabase = getAnonClient()
+        const { data, error } = await supabase.auth.signInWithPassword({ 
+          email: String(email).toLowerCase().trim(), 
+          password: String(password)
+        })
+        
+        if (error) {
+          console.error('Login error:', error)
+          return errorResponse('Invalid credentials', 401)
+        }
+        
+        // Ensure user has profile (upsert to handle edge cases)
+        if (data.user) {
+          try {
+            const serverClient = getServerClient()
+            await serverClient.from('profiles').upsert({
+              id: data.user.id,
+              email: data.user.email,
+              credits_remaining: INITIAL_CREDITS
+            }, { onConflict: 'id', ignoreDuplicates: true })
+          } catch (profileError) {
+            console.error('Profile upsert error:', profileError)
+            // Don't fail login if profile upsert fails
+          }
+        }
+        
+        return handleCORS(NextResponse.json({
+          message: 'Login successful',
+          user: { id: data.user.id, email: data.user.email },
+          session: data.session
+        }))
+      } catch (loginError) {
+        console.error('Login exception:', loginError)
+        return errorResponse('Authentication service error', 500)
       }
-      
-      // Ensure user has profile (upsert to handle edge cases)
-      if (data.user) {
-        const serverClient = getServerClient()
-        await serverClient.from('profiles').upsert({
-          id: data.user.id,
-          email: data.user.email,
-          credits_remaining: INITIAL_CREDITS
-        }, { onConflict: 'id', ignoreDuplicates: true })
-      }
-      
-      return handleCORS(NextResponse.json({
-        message: 'Login successful',
-        user: { id: data.user.id, email: data.user.email },
-        session: data.session
-      }))
     }
     
     // Logout
