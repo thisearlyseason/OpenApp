@@ -467,7 +467,8 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       return handleCORS(NextResponse.json({
         response: responseText,
         tokens_used: tokensUsed,
-        credits_remaining: newCredits
+        credits_remaining: newCredits,
+        requests_remaining: rateLimit.remaining
       }))
     }
 
