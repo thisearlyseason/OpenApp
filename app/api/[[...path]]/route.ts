@@ -315,11 +315,16 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
         return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
       }
       
-      // Rate limiting
-      const rateLimit = checkRateLimit(user.id)
+      // Hourly rate limiting: 20 requests per hour per user
+      const rateLimit = checkGenerateRateLimit(user.id)
       if (!rateLimit.allowed) {
+        const minutes = Math.ceil((rateLimit.retryAfterSeconds || 0) / 60)
         return handleCORS(NextResponse.json(
-          { error: 'Rate limit exceeded', retryAfter: rateLimit.retryAfter },
+          { 
+            error: `Rate limit exceeded. You can make 20 requests per hour. Try again in ${minutes} minute${minutes !== 1 ? 's' : ''}.`,
+            retry_after_seconds: rateLimit.retryAfterSeconds,
+            requests_remaining: 0
+          },
           { status: 429 }
         ))
       }
