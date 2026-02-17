@@ -2,11 +2,10 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import type { User } from '@supabase/supabase-js'
 
-interface HistoryItem {
+interface PromptLog {
   id: string
   prompt: string
   response: string
@@ -21,24 +20,28 @@ interface DashboardClientProps {
 export default function DashboardClient({ user }: DashboardClientProps) {
   const router = useRouter()
   const supabase = createClient()
-  const [credits, setCredits] = useState(0)
+  
+  const [accessToken, setAccessToken] = useState<string | null>(null)
+  const [credits, setCredits] = useState<number | null>(null)
   const [prompt, setPrompt] = useState('')
   const [response, setResponse] = useState('')
-  const [promptLoading, setPromptLoading] = useState(false)
-  const [history, setHistory] = useState<HistoryItem[]>([])
-  const [activeTab, setActiveTab] = useState<'prompt' | 'history'>('prompt')
-  const [accessToken, setAccessToken] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [logs, setLogs] = useState<PromptLog[]>([])
+  const [logsLoading, setLogsLoading] = useState(true)
 
+  // Get session and fetch initial data
   useEffect(() => {
-    const getSession = async () => {
+    const init = async () => {
       const { data: { session } } = await supabase.auth.getSession()
       if (session?.access_token) {
         setAccessToken(session.access_token)
         fetchCredits(session.access_token)
+        fetchLogs(session.access_token)
       }
     }
-    getSession()
-  }, [supabase.auth])
+    init()
+  }, [])
 
   const fetchCredits = async (token: string) => {
     try {
@@ -46,33 +49,41 @@ export default function DashboardClient({ user }: DashboardClientProps) {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       const data = await res.json()
-      if (res.ok) setCredits(data.credits)
+      if (res.ok) {
+        setCredits(data.credits)
+      }
     } catch (err) {
       console.error('Failed to fetch credits:', err)
     }
   }
 
-  const fetchHistory = async () => {
-    if (!accessToken) return
+  const fetchLogs = async (token: string) => {
+    setLogsLoading(true)
     try {
       const res = await fetch('/api/history', {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
+        headers: { 'Authorization': `Bearer ${token}` }
       })
       const data = await res.json()
-      if (res.ok) setHistory(data.history || [])
+      if (res.ok) {
+        // Get last 10 logs
+        setLogs((data.history || []).slice(0, 10))
+      }
     } catch (err) {
-      console.error('Failed to fetch history:', err)
+      console.error('Failed to fetch logs:', err)
+    } finally {
+      setLogsLoading(false)
     }
   }
 
-  const handleSubmitPrompt = async () => {
-    if (!prompt.trim() || promptLoading || !accessToken) return
-
-    setPromptLoading(true)
+  const handleSubmit = async () => {
+    if (!prompt.trim() || loading || !accessToken) return
+    
+    setLoading(true)
+    setError('')
     setResponse('')
 
     try {
-      const res = await fetch('/api/prompt', {
+      const res = await fetch('/api/generate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -84,17 +95,20 @@ export default function DashboardClient({ user }: DashboardClientProps) {
       const data = await res.json()
 
       if (!res.ok) {
-        setResponse(`Error: ${data.error}`)
+        setError(data.error || 'Request failed')
         return
       }
 
       setResponse(data.response)
-      setCredits(data.creditsRemaining)
+      setCredits(data.credits_remaining)
       setPrompt('')
+      
+      // Refresh logs
+      fetchLogs(accessToken)
     } catch (err) {
-      setResponse('Error: Network error. Please try again.')
+      setError('Network error. Please try again.')
     } finally {
-      setPromptLoading(false)
+      setLoading(false)
     }
   }
 
@@ -105,148 +119,148 @@ export default function DashboardClient({ user }: DashboardClientProps) {
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+    <div style={{ maxWidth: '800px', margin: '0 auto', padding: '20px', fontFamily: 'system-ui, sans-serif' }}>
       {/* Header */}
-      <header className="border-b border-white/10 bg-black/20 backdrop-blur">
-        <div className="container mx-auto px-4 h-16 flex items-center justify-between">
-          <Link href="/" className="text-xl font-bold text-white">
-            AI Prompt Platform
-          </Link>
-
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-2 bg-purple-600/20 px-4 py-2 rounded-full">
-              <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <span className="font-semibold text-purple-300">{credits}</span>
-              <span className="text-purple-400 text-sm">credits</span>
-            </div>
-
-            <span className="text-gray-400 text-sm">{user.email}</span>
-
-            <button
-              onClick={handleLogout}
-              className="text-gray-400 hover:text-white transition-colors"
-              title="Logout"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <div className="container mx-auto px-4 py-8 max-w-4xl">
-        {/* Tabs */}
-        <div className="flex gap-2 mb-8">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px', paddingBottom: '20px', borderBottom: '1px solid #eee' }}>
+        <h1 style={{ margin: 0, fontSize: '24px' }}>Dashboard</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+          <span style={{ color: '#666', fontSize: '14px' }}>{user.email}</span>
           <button
-            onClick={() => setActiveTab('prompt')}
-            className={`px-6 py-2 rounded-lg font-medium transition-colors ${
-              activeTab === 'prompt'
-                ? 'bg-purple-600 text-white'
-                : 'bg-white/10 text-gray-400 hover:bg-white/20'
-            }`}
+            onClick={handleLogout}
+            style={{ padding: '8px 16px', background: 'none', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer' }}
           >
-            Submit Prompt
+            Logout
           </button>
+        </div>
+      </div>
+
+      {/* Credits Display */}
+      <div style={{ background: '#f5f5f5', padding: '20px', borderRadius: '8px', marginBottom: '30px' }}>
+        <div style={{ fontSize: '14px', color: '#666', marginBottom: '5px' }}>Credits Remaining</div>
+        <div style={{ fontSize: '32px', fontWeight: 'bold' }}>
+          {credits !== null ? credits.toLocaleString() : '...'}
+        </div>
+      </div>
+
+      {/* Prompt Input */}
+      <div style={{ marginBottom: '30px' }}>
+        <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
+          Enter your prompt
+        </label>
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="Type your prompt here..."
+          disabled={loading}
+          style={{
+            width: '100%',
+            minHeight: '120px',
+            padding: '12px',
+            fontSize: '14px',
+            border: '1px solid #ddd',
+            borderRadius: '8px',
+            resize: 'vertical',
+            boxSizing: 'border-box',
+            fontFamily: 'inherit'
+          }}
+        />
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px' }}>
+          <span style={{ fontSize: '12px', color: '#999' }}>
+            {prompt.length}/4000 characters
+          </span>
           <button
-            onClick={() => {
-              setActiveTab('history')
-              fetchHistory()
+            onClick={handleSubmit}
+            disabled={loading || !prompt.trim() || prompt.length > 4000}
+            style={{
+              padding: '12px 24px',
+              background: loading || !prompt.trim() || prompt.length > 4000 ? '#ccc' : '#000',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              fontSize: '14px',
+              fontWeight: '500',
+              cursor: loading || !prompt.trim() || prompt.length > 4000 ? 'not-allowed' : 'pointer'
             }}
-            className={`px-6 py-2 rounded-lg font-medium transition-colors ${
-              activeTab === 'history'
-                ? 'bg-purple-600 text-white'
-                : 'bg-white/10 text-gray-400 hover:bg-white/20'
-            }`}
           >
-            History
+            {loading ? 'Generating...' : 'Generate'}
           </button>
         </div>
+      </div>
 
-        {/* Prompt Tab */}
-        {activeTab === 'prompt' && (
-          <div className="space-y-6">
-            <div className="bg-white/10 backdrop-blur rounded-xl p-6">
-              <h2 className="text-xl font-semibold text-white mb-4">New Prompt</h2>
-              <p className="text-gray-400 text-sm mb-4">Each request costs 1 credit</p>
+      {/* Error Display */}
+      {error && (
+        <div style={{
+          background: '#fee',
+          border: '1px solid #fcc',
+          color: '#c00',
+          padding: '12px 16px',
+          borderRadius: '6px',
+          marginBottom: '20px',
+          fontSize: '14px'
+        }}>
+          {error}
+        </div>
+      )}
 
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Enter your prompt here..."
-                rows={4}
-                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
-                disabled={promptLoading}
-              />
-
-              <button
-                onClick={handleSubmitPrompt}
-                disabled={promptLoading || !prompt.trim() || credits < 1}
-                className="mt-4 w-full py-3 bg-purple-600 text-white font-semibold rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                {promptLoading ? (
-                  <>
-                    <div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full"></div>
-                    Processing...
-                  </>
-                ) : (
-                  'Submit Prompt (1 credit)'
-                )}
-              </button>
-
-              {credits < 1 && (
-                <p className="mt-4 text-amber-400 text-sm text-center">
-                  You have no credits remaining.
-                </p>
-              )}
-            </div>
-
-            {response && (
-              <div className="bg-white/10 backdrop-blur rounded-xl p-6">
-                <h3 className="text-lg font-semibold text-white mb-4">Response</h3>
-                <p className="text-gray-300 whitespace-pre-wrap leading-relaxed">{response}</p>
-              </div>
-            )}
+      {/* Response Display */}
+      {response && (
+        <div style={{ marginBottom: '30px' }}>
+          <h3 style={{ fontSize: '16px', marginBottom: '10px' }}>Response</h3>
+          <div style={{
+            background: '#f9f9f9',
+            border: '1px solid #eee',
+            padding: '16px',
+            borderRadius: '8px',
+            whiteSpace: 'pre-wrap',
+            fontSize: '14px',
+            lineHeight: '1.6'
+          }}>
+            {response}
           </div>
-        )}
+        </div>
+      )}
 
-        {/* History Tab */}
-        {activeTab === 'history' && (
-          <div className="bg-white/10 backdrop-blur rounded-xl p-6">
-            <h2 className="text-xl font-semibold text-white mb-4">Prompt History</h2>
-
-            {history.length === 0 ? (
-              <p className="text-gray-400 text-center py-8">No prompts yet. Submit your first prompt!</p>
-            ) : (
-              <div className="space-y-4 max-h-[600px] overflow-y-auto">
-                {history.map((item) => (
-                  <div key={item.id} className="border-b border-white/10 pb-4 last:border-0">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-xs bg-purple-600/30 text-purple-300 px-2 py-1 rounded">Prompt</span>
-                      <span className="text-xs text-gray-500">
-                        {new Date(item.created_at).toLocaleString()}
-                      </span>
-                    </div>
-                    <p className="text-gray-300 text-sm bg-white/5 p-3 rounded-lg mb-2">{item.prompt}</p>
-
-                    <span className="text-xs bg-green-600/30 text-green-300 px-2 py-1 rounded">Response</span>
-                    <p className="text-gray-400 text-sm bg-white/5 p-3 rounded-lg mt-2 whitespace-pre-wrap">
-                      {item.response}
-                    </p>
-
-                    <div className="flex gap-4 mt-2 text-xs text-gray-500">
-                      <span>Tokens: {item.tokens_used}</span>
-                    </div>
+      {/* Prompt Logs */}
+      <div style={{ borderTop: '1px solid #eee', paddingTop: '30px' }}>
+        <h3 style={{ fontSize: '16px', marginBottom: '15px' }}>Recent Prompts</h3>
+        
+        {logsLoading ? (
+          <div style={{ color: '#999', fontSize: '14px' }}>Loading...</div>
+        ) : logs.length === 0 ? (
+          <div style={{ color: '#999', fontSize: '14px' }}>No prompts yet.</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+            {logs.map((log) => (
+              <div
+                key={log.id}
+                style={{
+                  background: '#fafafa',
+                  border: '1px solid #eee',
+                  borderRadius: '8px',
+                  padding: '15px'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', fontSize: '12px', color: '#999' }}>
+                  <span>{new Date(log.created_at).toLocaleString()}</span>
+                  <span>{log.tokens_used} tokens</span>
+                </div>
+                <div style={{ marginBottom: '10px' }}>
+                  <div style={{ fontSize: '12px', color: '#666', marginBottom: '4px' }}>Prompt:</div>
+                  <div style={{ fontSize: '14px', color: '#333' }}>
+                    {log.prompt.length > 100 ? log.prompt.slice(0, 100) + '...' : log.prompt}
                   </div>
-                ))}
+                </div>
+                <div>
+                  <div style={{ fontSize: '12px', color: '#666', marginBottom: '4px' }}>Response:</div>
+                  <div style={{ fontSize: '14px', color: '#555' }}>
+                    {log.response.length > 150 ? log.response.slice(0, 150) + '...' : log.response}
+                  </div>
+                </div>
               </div>
-            )}
+            ))}
           </div>
         )}
       </div>
-    </main>
+    </div>
   )
 }
