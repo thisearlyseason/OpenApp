@@ -9,8 +9,16 @@ from typing import Dict, Any, Optional
 # Get base URL from environment
 BASE_URL = "https://straico-submit.preview.emergentagent.com/api"
 
-# Test data
-TEST_EMAIL = "testuser123@gmail.com"  # Use a more standard email format
+# Test data - using different emails to avoid confirmation issues
+import random
+import string
+
+def generate_test_email():
+    """Generate a random test email"""
+    random_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    return f"test{random_str}@testdomain.com"
+
+TEST_EMAIL = generate_test_email()
 TEST_PASSWORD = "password123"
 
 class BackendTester:
