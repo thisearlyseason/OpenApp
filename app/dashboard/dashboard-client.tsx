@@ -22,13 +22,16 @@ export default function DashboardClient({ user }: DashboardClientProps) {
   const supabase = createClient()
   
   const [accessToken, setAccessToken] = useState<string | null>(null)
-  const [credits, setCredits] = useState<number | null>(null)
+  const [credits, setCredits] = useState<number | string | null>(null)
   const [prompt, setPrompt] = useState('')
   const [response, setResponse] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [logs, setLogs] = useState<PromptLog[]>([])
   const [logsLoading, setLogsLoading] = useState(true)
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [models, setModels] = useState<string[]>([])
+  const [selectedModel, setSelectedModel] = useState('gpt-4o-mini')
 
   // Get session and fetch initial data
   useEffect(() => {
@@ -38,6 +41,7 @@ export default function DashboardClient({ user }: DashboardClientProps) {
         setAccessToken(session.access_token)
         fetchCredits(session.access_token)
         fetchLogs(session.access_token)
+        fetchModels(session.access_token)
       }
     }
     init()
@@ -57,6 +61,24 @@ export default function DashboardClient({ user }: DashboardClientProps) {
     }
   }
 
+  const fetchModels = async (token: string) => {
+    try {
+      const res = await fetch('/api/models', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setModels(data.models || [])
+        setIsAdmin(data.is_admin || false)
+        if (data.default) {
+          setSelectedModel(data.default)
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch models:', err)
+    }
+  }
+
   const fetchLogs = async (token: string) => {
     setLogsLoading(true)
     try {
@@ -65,7 +87,6 @@ export default function DashboardClient({ user }: DashboardClientProps) {
       })
       const data = await res.json()
       if (res.ok) {
-        // Get last 10 logs
         setLogs((data.history || []).slice(0, 10))
       }
     } catch (err) {
@@ -83,13 +104,18 @@ export default function DashboardClient({ user }: DashboardClientProps) {
     setResponse('')
 
     try {
+      const body: Record<string, string> = { prompt: prompt.trim() }
+      if (isAdmin && selectedModel) {
+        body.model = selectedModel
+      }
+
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${accessToken}`
         },
-        body: JSON.stringify({ prompt: prompt.trim() })
+        body: JSON.stringify(body)
       })
 
       const data = await res.json()
@@ -100,10 +126,11 @@ export default function DashboardClient({ user }: DashboardClientProps) {
       }
 
       setResponse(data.response)
-      setCredits(data.credits_remaining)
+      if (data.credits_remaining !== 'unlimited') {
+        setCredits(data.credits_remaining)
+      }
       setPrompt('')
       
-      // Refresh logs
       fetchLogs(accessToken)
     } catch (err) {
       setError('Network error. Please try again.')
@@ -122,7 +149,14 @@ export default function DashboardClient({ user }: DashboardClientProps) {
     <div style={{ maxWidth: '800px', margin: '0 auto', padding: '20px', fontFamily: 'system-ui, sans-serif' }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px', paddingBottom: '20px', borderBottom: '1px solid #eee' }}>
-        <h1 style={{ margin: 0, fontSize: '24px' }}>Dashboard</h1>
+        <div>
+          <h1 style={{ margin: 0, fontSize: '24px' }}>Dashboard</h1>
+          {isAdmin && (
+            <span style={{ fontSize: '12px', background: '#7c3aed', color: 'white', padding: '2px 8px', borderRadius: '4px', marginTop: '5px', display: 'inline-block' }}>
+              Admin
+            </span>
+          )}
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
           <span style={{ color: '#666', fontSize: '14px' }}>{user.email}</span>
           <button
@@ -138,9 +172,37 @@ export default function DashboardClient({ user }: DashboardClientProps) {
       <div style={{ background: '#f5f5f5', padding: '20px', borderRadius: '8px', marginBottom: '30px' }}>
         <div style={{ fontSize: '14px', color: '#666', marginBottom: '5px' }}>Credits Remaining</div>
         <div style={{ fontSize: '32px', fontWeight: 'bold' }}>
-          {credits !== null ? credits.toLocaleString() : '...'}
+          {isAdmin ? '∞ Unlimited' : (credits !== null ? Number(credits).toLocaleString() : '...')}
         </div>
       </div>
+
+      {/* Model Selection (Admin only) */}
+      {isAdmin && models.length > 1 && (
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
+            Select Model
+          </label>
+          <select
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '12px',
+              fontSize: '14px',
+              border: '1px solid #ddd',
+              borderRadius: '8px',
+              background: 'white',
+              cursor: 'pointer'
+            }}
+          >
+            {models.map((model) => (
+              <option key={model} value={model}>
+                {model}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* Prompt Input */}
       <div style={{ marginBottom: '30px' }}>
