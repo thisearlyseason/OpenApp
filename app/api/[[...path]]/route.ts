@@ -195,7 +195,11 @@ async function getUserFromAuth(request: NextRequest) {
   }
   
   const token = authHeader.replace('Bearer ', '')
-  const supabase = createAnonClient()
+  if (!token || token.length < 10) {
+    return null
+  }
+  
+  const supabase = getAnonClient()
   
   const { data: { user }, error } = await supabase.auth.getUser(token)
   if (error || !user) {
