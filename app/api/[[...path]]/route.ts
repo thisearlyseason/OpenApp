@@ -367,24 +367,23 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
     if (route === '/credits' && method === 'GET') {
       const user = await getUserFromAuth(request)
       if (!user) {
-        return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+        return errorResponse('Unauthorized', 401)
       }
       
-      const serverClient = createServerClient()
+      const serverClient = getServerClient()
       const { data, error } = await serverClient
         .from('profiles')
-        .select('credits_remaining, created_at')
+        .select('credits_remaining')
         .eq('id', user.id)
         .single()
       
       if (error || !data) {
         // Create profile if doesn't exist
-        await serverClient.from('profiles').insert({
+        await serverClient.from('profiles').upsert({
           id: user.id,
           email: user.email,
-          credits_remaining: INITIAL_CREDITS,
-          created_at: new Date().toISOString()
-        })
+          credits_remaining: INITIAL_CREDITS
+        }, { onConflict: 'id', ignoreDuplicates: true })
         return handleCORS(NextResponse.json({ credits: INITIAL_CREDITS }))
       }
       
@@ -394,12 +393,13 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
     // ============ GENERATE ENDPOINT ============
     
     if (route === '/generate' && method === 'POST') {
+      // Auth check FIRST (before rate limiting)
       const user = await getUserFromAuth(request)
       if (!user) {
         return errorResponse('Unauthorized', 401)
       }
       
-      // Hourly rate limiting: 20 requests per hour per user
+      // Rate limiting AFTER auth (prevents DoS via fake tokens)
       const rateLimit = checkGenerateRateLimit(user.id)
       if (!rateLimit.allowed) {
         const minutes = Math.ceil((rateLimit.retryAfterSeconds || 0) / 60)
