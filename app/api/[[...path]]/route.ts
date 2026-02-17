@@ -209,25 +209,6 @@ async function getUserFromAuth(request: NextRequest) {
   return user
 }
 
-// Input validation
-function validatePromptInput(prompt: unknown): { valid: boolean; prompt?: string; error?: string } {
-  if (!prompt || typeof prompt !== 'string') {
-    return { valid: false, error: 'Prompt is required and must be a string' }
-  }
-  
-  const trimmed = prompt.trim()
-  
-  if (trimmed.length === 0) {
-    return { valid: false, error: 'Prompt cannot be empty' }
-  }
-  
-  if (trimmed.length > 10000) {
-    return { valid: false, error: 'Prompt cannot exceed 10,000 characters' }
-  }
-  
-  return { valid: true, prompt: trimmed }
-}
-
 export async function OPTIONS() {
   return handleCORS(new NextResponse(null, { status: 200 }))
 }
