@@ -248,13 +248,33 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       return handleCORS(NextResponse.json({ 
         message: 'AI Prompt Platform API',
         version: '1.0.0',
-        endpoints: ['/auth/signup', '/auth/login', '/auth/logout', '/credits', '/prompt', '/history']
+        endpoints: ['/auth/signup', '/auth/login', '/auth/logout', '/credits', '/generate', '/history', '/models']
       }))
     }
 
     // Health check
     if (route === '/health' && method === 'GET') {
       return handleCORS(NextResponse.json({ status: 'healthy', timestamp: new Date().toISOString() }))
+    }
+
+    // Models endpoint (admin only gets full list)
+    if (route === '/models' && method === 'GET') {
+      const user = await getUserFromAuth(request)
+      const userIsAdmin = user ? isAdmin(user.email) : false
+      
+      if (userIsAdmin) {
+        return handleCORS(NextResponse.json({
+          models: Object.keys(AVAILABLE_MODELS),
+          default: 'gpt-4o-mini',
+          is_admin: true
+        }))
+      } else {
+        return handleCORS(NextResponse.json({
+          models: ['gpt-4o-mini'],
+          default: 'gpt-4o-mini',
+          is_admin: false
+        }))
+      }
     }
 
     // ============ AUTH ENDPOINTS ============
