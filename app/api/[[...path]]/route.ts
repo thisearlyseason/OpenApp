@@ -145,13 +145,21 @@ function errorResponse(message: string, status: number, details?: Record<string,
   }, { status }))
 }
 
-// CORS helper
+// CORS helper - RESTRICTED to allowed origins
 function handleCORS(response: NextResponse): NextResponse {
-  response.headers.set('Access-Control-Allow-Origin', process.env.CORS_ORIGINS || '*')
-  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+  const allowedOrigin = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
+  response.headers.set('Access-Control-Allow-Origin', allowedOrigin)
+  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
   response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
   response.headers.set('Access-Control-Allow-Credentials', 'true')
+  response.headers.set('Access-Control-Max-Age', '86400')
   return response
+}
+
+// Email validation
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+function isValidEmail(email: unknown): boolean {
+  return typeof email === 'string' && EMAIL_REGEX.test(email) && email.length <= 254
 }
 
 // Rate limit check
