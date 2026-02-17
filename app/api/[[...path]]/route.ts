@@ -494,7 +494,7 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            model: 'openai/gpt-4o-mini',
+            model: selectedModel,
             message: sanitizedPrompt,
             max_tokens: MAX_TOKENS
           }),
@@ -506,23 +506,26 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
         if (!straicoResponse.ok) {
           const errorText = await straicoResponse.text().catch(() => 'Unknown error')
           console.error('Straico API error:', straicoResponse.status, errorText)
-          // REFUND on failure
-          await serverClient
-            .from('profiles')
-            .update({ credits_remaining: currentCredits })
-            .eq('id', user.id)
+          // REFUND on failure (only for non-admin)
+          if (!userIsAdmin) {
+            await serverClient
+              .from('profiles')
+              .update({ credits_remaining: currentCredits })
+              .eq('id', user.id)
+          }
           return errorResponse('AI service error', 502)
         }
         
         straicoData = await straicoResponse.json()
-        apiSuccess = true
       } catch (fetchError: any) {
         clearTimeout(timeoutId)
-        // REFUND on failure
-        await serverClient
-          .from('profiles')
-          .update({ credits_remaining: currentCredits })
-          .eq('id', user.id)
+        // REFUND on failure (only for non-admin)
+        if (!userIsAdmin) {
+          await serverClient
+            .from('profiles')
+            .update({ credits_remaining: currentCredits })
+            .eq('id', user.id)
+        }
         
         if (fetchError.name === 'AbortError') {
           return errorResponse('Request timeout - AI service took too long', 504)
@@ -542,11 +545,13 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       }
       
       if (!responseText || responseText.trim().length === 0) {
-        // REFUND on empty response
-        await serverClient
-          .from('profiles')
-          .update({ credits_remaining: currentCredits })
-          .eq('id', user.id)
+        // REFUND on empty response (only for non-admin)
+        if (!userIsAdmin) {
+          await serverClient
+            .from('profiles')
+            .update({ credits_remaining: currentCredits })
+            .eq('id', user.id)
+        }
         return errorResponse('No response from AI', 502)
       }
       
