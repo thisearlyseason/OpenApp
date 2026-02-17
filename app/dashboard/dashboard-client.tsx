@@ -11,7 +11,6 @@ interface HistoryItem {
   prompt: string
   response: string
   tokens_used: number
-  credits_used: number
   created_at: string
 }
 
