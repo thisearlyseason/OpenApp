@@ -270,7 +270,166 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       return handleCORS(NextResponse.json({ credits: data.credits_remaining }))
     }
 
-    // ============ PROMPT ENDPOINT ============
+    // ============ GENERATE ENDPOINT ============
+    
+    if (route === '/generate' && method === 'POST') {
+      const user = await getUserFromAuth(request)
+      if (!user) {
+        return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+      }
+      
+      // Rate limiting
+      const rateLimit = checkRateLimit(user.id)
+      if (!rateLimit.allowed) {
+        return handleCORS(NextResponse.json(
+          { error: 'Rate limit exceeded', retryAfter: rateLimit.retryAfter },
+          { status: 429 }
+        ))
+      }
+      
+      let body: { prompt?: unknown }
+      try {
+        body = await request.json()
+      } catch {
+        return handleCORS(NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }))
+      }
+      
+      // Validate prompt - don't trust client values
+      const prompt = body.prompt
+      if (!prompt || typeof prompt !== 'string') {
+        return handleCORS(NextResponse.json({ error: 'Prompt is required and must be a string' }, { status: 400 }))
+      }
+      
+      const trimmedPrompt = prompt.trim()
+      if (trimmedPrompt.length === 0) {
+        return handleCORS(NextResponse.json({ error: 'Prompt cannot be empty' }, { status: 400 }))
+      }
+      
+      // Reject if prompt exceeds 4000 characters
+      if (trimmedPrompt.length > 4000) {
+        return handleCORS(NextResponse.json({ error: 'Prompt cannot exceed 4000 characters' }, { status: 400 }))
+      }
+      
+      const serverClient = createServerClient()
+      
+      // Fetch user's credits_remaining from profiles
+      const { data: profile, error: profileError } = await serverClient
+        .from('profiles')
+        .select('credits_remaining')
+        .eq('id', user.id)
+        .single()
+      
+      if (profileError || !profile) {
+        return handleCORS(NextResponse.json({ error: 'Profile not found' }, { status: 404 }))
+      }
+      
+      // Check if credits_remaining <= 0
+      if (profile.credits_remaining <= 0) {
+        return handleCORS(NextResponse.json({ error: 'Insufficient credits', credits_remaining: 0 }, { status: 402 }))
+      }
+      
+      // Call Straico API with timeout
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
+      
+      let straicoResponse: Response
+      let straicoData: any
+      
+      try {
+        straicoResponse = await fetch(`${STRAICO_API_BASE_URL}/prompt/completion`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${STRAICO_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: 'openai/gpt-4o-mini',
+            message: trimmedPrompt,
+            max_tokens: MAX_TOKENS // Limit max tokens to prevent excessive usage
+          }),
+          signal: controller.signal
+        })
+        
+        clearTimeout(timeoutId)
+        
+        if (!straicoResponse.ok) {
+          const errorText = await straicoResponse.text()
+          console.error('Straico API error:', straicoResponse.status, errorText)
+          return handleCORS(NextResponse.json({ error: 'AI service error' }, { status: 502 }))
+        }
+        
+        straicoData = await straicoResponse.json()
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId)
+        if (fetchError.name === 'AbortError') {
+          return handleCORS(NextResponse.json({ error: 'Request timeout' }, { status: 504 }))
+        }
+        console.error('Straico fetch error:', fetchError)
+        return handleCORS(NextResponse.json({ error: 'AI service unavailable' }, { status: 503 }))
+      }
+      
+      // Extract response text
+      let responseText = ''
+      if (straicoData.data?.completion?.choices?.[0]?.message?.content) {
+        responseText = straicoData.data.completion.choices[0].message.content
+      } else if (straicoData.data?.completion) {
+        responseText = String(straicoData.data.completion)
+      } else if (straicoData.completion) {
+        responseText = String(straicoData.completion)
+      }
+      
+      if (!responseText) {
+        return handleCORS(NextResponse.json({ error: 'No response from AI' }, { status: 502 }))
+      }
+      
+      // Estimate tokens_used: use API value or estimate (1 token ≈ 4 characters)
+      let tokensUsed = straicoData.data?.usage?.total_tokens 
+        || straicoData.data?.words 
+        || straicoData.usage?.total_tokens
+      
+      if (!tokensUsed || tokensUsed <= 0) {
+        // Estimate: input tokens + output tokens (1 token ≈ 4 characters)
+        const inputTokens = Math.ceil(trimmedPrompt.length / 4)
+        const outputTokens = Math.ceil(responseText.length / 4)
+        tokensUsed = inputTokens + outputTokens
+      }
+      
+      // Deduct tokens_used from credits_remaining
+      const newCredits = Math.max(0, profile.credits_remaining - tokensUsed)
+      
+      // Update profiles table
+      const { error: updateError } = await serverClient
+        .from('profiles')
+        .update({ credits_remaining: newCredits })
+        .eq('id', user.id)
+      
+      if (updateError) {
+        console.error('Failed to update credits:', updateError)
+        // Continue anyway - don't fail the request
+      }
+      
+      // Insert record into prompt_logs
+      const { error: logError } = await serverClient.from('prompt_logs').insert({
+        user_id: user.id,
+        prompt: trimmedPrompt,
+        response: responseText,
+        tokens_used: tokensUsed
+      })
+      
+      if (logError) {
+        console.error('Failed to insert prompt log:', logError)
+        // Continue anyway - don't fail the request
+      }
+      
+      // Return response JSON
+      return handleCORS(NextResponse.json({
+        response: responseText,
+        tokens_used: tokensUsed,
+        credits_remaining: newCredits
+      }))
+    }
+
+    // ============ PROMPT ENDPOINT (legacy) ============
     
     if (route === '/prompt' && method === 'POST') {
       const user = await getUserFromAuth(request)
