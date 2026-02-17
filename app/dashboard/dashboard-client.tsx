@@ -239,7 +239,6 @@ export default function DashboardClient({ user }: DashboardClientProps) {
 
                     <div className="flex gap-4 mt-2 text-xs text-gray-500">
                       <span>Tokens: {item.tokens_used}</span>
-                      <span>Credits: {item.credits_used}</span>
                     </div>
                   </div>
                 ))}
