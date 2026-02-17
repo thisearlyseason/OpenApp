@@ -256,48 +256,52 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
     
     // Signup
     if (route === '/auth/signup' && method === 'POST') {
-      const body = await request.json()
+      let body: Record<string, unknown>
+      try {
+        body = await request.json()
+      } catch {
+        return errorResponse('Invalid JSON body', 400)
+      }
+      
       const { email, password } = body
       
       if (!email || !password) {
-        return handleCORS(NextResponse.json(
-          { error: 'Email and password are required' },
-          { status: 400 }
-        ))
+        return errorResponse('Email and password are required', 400)
       }
       
-      if (password.length < 6) {
-        return handleCORS(NextResponse.json(
-          { error: 'Password must be at least 6 characters' },
-          { status: 400 }
-        ))
+      // Validate email format
+      if (!isValidEmail(email)) {
+        return errorResponse('Invalid email format', 400)
       }
       
-      const supabase = createAnonClient()
-      const { data, error } = await supabase.auth.signUp({ email, password })
+      if (typeof password !== 'string' || password.length < 6) {
+        return errorResponse('Password must be at least 6 characters', 400)
+      }
+      
+      if (password.length > 72) {
+        return errorResponse('Password cannot exceed 72 characters', 400)
+      }
+      
+      const supabase = getAnonClient()
+      const { data, error } = await supabase.auth.signUp({ 
+        email: String(email).toLowerCase().trim(), 
+        password: String(password)
+      })
       
       if (error) {
-        return handleCORS(NextResponse.json({ error: error.message }, { status: 400 }))
+        return errorResponse(error.message, 400)
       }
       
-      // Create profile with initial credits (server-side, safe upsert)
+      // Create profile with initial credits (server-side, safe insert)
       if (data.user) {
-        const serverClient = createServerClient()
+        const serverClient = getServerClient()
         
-        // Check if profile already exists
-        const { data: existingProfile } = await serverClient
-          .from('profiles')
-          .select('id')
-          .eq('id', data.user.id)
-          .single()
-        
-        // Only insert if profile doesn't exist
-        if (!existingProfile) {
-          await serverClient.from('profiles').insert({
-            id: data.user.id,
-            email: data.user.email,
-            credits_remaining: INITIAL_CREDITS
-          })
+        // Only insert if profile doesn't exist (upsert with onConflict ignore)
+        await serverClient.from('profiles').upsert({
+          id: data.user.id,
+          email: data.user.email,
+          credits_remaining: INITIAL_CREDITS
+        }, { onConflict: 'id', ignoreDuplicates: true })
         }
       }
       
