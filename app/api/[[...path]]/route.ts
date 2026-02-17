@@ -29,7 +29,7 @@ function createAnonClient() {
 }
 
 // Constants
-const INITIAL_CREDITS = parseInt(process.env.INITIAL_CREDITS || '100')
+const INITIAL_CREDITS = 100000
 const CREDITS_PER_REQUEST = parseInt(process.env.CREDITS_PER_REQUEST || '1')
 const MAX_TOKENS = parseInt(process.env.MAX_TOKENS || '2000')
 const STRAICO_API_KEY = process.env.STRAICO_API_KEY!
@@ -163,14 +163,14 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
         return handleCORS(NextResponse.json({ error: error.message }, { status: 400 }))
       }
       
-      // Create initial credits
+      // Create profile with initial credits
       if (data.user) {
         const serverClient = createServerClient()
-        await serverClient.from('user_credits').upsert({
-          user_id: data.user.id,
-          credits: INITIAL_CREDITS,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+        await serverClient.from('profiles').upsert({
+          id: data.user.id,
+          email: data.user.email,
+          credits_remaining: INITIAL_CREDITS,
+          created_at: new Date().toISOString()
         })
       }
       
@@ -200,21 +200,21 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
         return handleCORS(NextResponse.json({ error: error.message }, { status: 401 }))
       }
       
-      // Ensure user has credits
+      // Ensure user has profile
       if (data.user) {
         const serverClient = createServerClient()
-        const { data: creditsData } = await serverClient
-          .from('user_credits')
-          .select('credits')
-          .eq('user_id', data.user.id)
+        const { data: profileData } = await serverClient
+          .from('profiles')
+          .select('credits_remaining')
+          .eq('id', data.user.id)
           .single()
         
-        if (!creditsData) {
-          await serverClient.from('user_credits').insert({
-            user_id: data.user.id,
-            credits: INITIAL_CREDITS,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
+        if (!profileData) {
+          await serverClient.from('profiles').insert({
+            id: data.user.id,
+            email: data.user.email,
+            credits_remaining: INITIAL_CREDITS,
+            created_at: new Date().toISOString()
           })
         }
       }
@@ -241,22 +241,23 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       
       const serverClient = createServerClient()
       const { data, error } = await serverClient
-        .from('user_credits')
-        .select('credits, updated_at')
-        .eq('user_id', user.id)
+        .from('profiles')
+        .select('credits_remaining, created_at')
+        .eq('id', user.id)
         .single()
       
       if (error || !data) {
-        await serverClient.from('user_credits').insert({
-          user_id: user.id,
-          credits: INITIAL_CREDITS,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+        // Create profile if doesn't exist
+        await serverClient.from('profiles').insert({
+          id: user.id,
+          email: user.email,
+          credits_remaining: INITIAL_CREDITS,
+          created_at: new Date().toISOString()
         })
         return handleCORS(NextResponse.json({ credits: INITIAL_CREDITS }))
       }
       
-      return handleCORS(NextResponse.json({ credits: data.credits, lastUpdated: data.updated_at }))
+      return handleCORS(NextResponse.json({ credits: data.credits_remaining }))
     }
 
     // ============ PROMPT ENDPOINT ============
@@ -285,20 +286,20 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       
       const serverClient = createServerClient()
       
-      // Check credits
-      const { data: creditsData, error: creditsError } = await serverClient
-        .from('user_credits')
-        .select('credits')
-        .eq('user_id', user.id)
+      // Check credits from profiles table
+      const { data: profileData, error: profileError } = await serverClient
+        .from('profiles')
+        .select('credits_remaining')
+        .eq('id', user.id)
         .single()
       
-      if (creditsError || !creditsData) {
+      if (profileError || !profileData) {
         return handleCORS(NextResponse.json({ error: 'Unable to fetch credits' }, { status: 500 }))
       }
       
-      if (creditsData.credits < CREDITS_PER_REQUEST) {
+      if (profileData.credits_remaining < CREDITS_PER_REQUEST) {
         return handleCORS(NextResponse.json(
-          { error: 'Insufficient credits', credits: creditsData.credits },
+          { error: 'Insufficient credits', credits: profileData.credits_remaining },
           { status: 402 }
         ))
       }
@@ -334,32 +335,29 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
         responseText = JSON.stringify(straicoData)
       }
       
-      // Deduct credits
-      const newCredits = creditsData.credits - CREDITS_PER_REQUEST
-      await serverClient
-        .from('user_credits')
-        .update({ credits: newCredits, updated_at: new Date().toISOString() })
-        .eq('user_id', user.id)
-      
-      // Store history
-      const historyId = uuidv4()
+      // Get tokens used
       const tokensUsed = straicoData.data?.words || 0
       
-      await serverClient.from('prompt_history').insert({
-        id: historyId,
+      // Deduct credits from profiles table
+      const newCredits = profileData.credits_remaining - CREDITS_PER_REQUEST
+      await serverClient
+        .from('profiles')
+        .update({ credits_remaining: newCredits })
+        .eq('id', user.id)
+      
+      // Store in prompt_logs table
+      await serverClient.from('prompt_logs').insert({
         user_id: user.id,
         prompt: validation.prompt,
         response: responseText,
         tokens_used: tokensUsed,
-        credits_used: CREDITS_PER_REQUEST,
         created_at: new Date().toISOString()
       })
       
       return handleCORS(NextResponse.json({
         response: responseText,
         tokensUsed,
-        creditsRemaining: newCredits,
-        historyId
+        creditsRemaining: newCredits
       }))
     }
 
@@ -373,8 +371,8 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       
       const serverClient = createServerClient()
       const { data, error } = await serverClient
-        .from('prompt_history')
-        .select('id, prompt, response, tokens_used, credits_used, created_at')
+        .from('prompt_logs')
+        .select('id, prompt, response, tokens_used, created_at')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
         .limit(50)
