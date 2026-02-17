@@ -35,6 +35,12 @@ const MAX_TOKENS = parseInt(process.env.MAX_TOKENS || '2000')
 const STRAICO_API_KEY = process.env.STRAICO_API_KEY!
 const STRAICO_API_BASE_URL = process.env.STRAICO_API_BASE_URL || 'https://api.straico.com/v1'
 
+// Safety limits
+const MAX_PROMPT_LENGTH = 4000
+const MAX_RESPONSE_LENGTH = 16000
+const API_TIMEOUT_MS = 30000
+const MIN_PROMPT_LENGTH = 1
+
 // Rate limiting (in-memory for MVP)
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>()
 const RATE_LIMIT_WINDOW = 60000
@@ -75,6 +81,60 @@ function checkGenerateRateLimit(userId: string): { allowed: boolean; remaining: 
     allowed: true, 
     remaining: GENERATE_RATE_LIMIT - timestamps.length 
   }
+}
+
+// Strict input sanitization
+function sanitizeString(input: unknown): string | null {
+  if (typeof input !== 'string') return null
+  // Remove null bytes and control characters (except newlines and tabs)
+  return input.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim()
+}
+
+// Validate prompt strictly
+function validatePrompt(input: unknown): { valid: boolean; prompt?: string; error?: string } {
+  const sanitized = sanitizeString(input)
+  
+  if (sanitized === null) {
+    return { valid: false, error: 'Prompt must be a string' }
+  }
+  
+  if (sanitized.length < MIN_PROMPT_LENGTH) {
+    return { valid: false, error: 'Prompt cannot be empty' }
+  }
+  
+  if (sanitized.length > MAX_PROMPT_LENGTH) {
+    return { valid: false, error: `Prompt cannot exceed ${MAX_PROMPT_LENGTH} characters` }
+  }
+  
+  return { valid: true, prompt: sanitized }
+}
+
+// Truncate response to max length
+function truncateResponse(response: string): string {
+  if (response.length <= MAX_RESPONSE_LENGTH) return response
+  return response.slice(0, MAX_RESPONSE_LENGTH) + '... [truncated]'
+}
+
+// Safe integer parsing
+function safeParseInt(value: unknown, defaultValue: number): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.floor(value)
+  }
+  if (typeof value === 'string') {
+    const parsed = parseInt(value, 10)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return defaultValue
+}
+
+// Graceful error response helper
+function errorResponse(message: string, status: number, details?: Record<string, unknown>): NextResponse {
+  return handleCORS(NextResponse.json({
+    error: message,
+    status,
+    timestamp: new Date().toISOString(),
+    ...details
+  }, { status }))
 }
 
 // CORS helper
