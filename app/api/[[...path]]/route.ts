@@ -163,15 +163,25 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
         return handleCORS(NextResponse.json({ error: error.message }, { status: 400 }))
       }
       
-      // Create profile with initial credits
+      // Create profile with initial credits (server-side, safe upsert)
       if (data.user) {
         const serverClient = createServerClient()
-        await serverClient.from('profiles').upsert({
-          id: data.user.id,
-          email: data.user.email,
-          credits_remaining: INITIAL_CREDITS,
-          created_at: new Date().toISOString()
-        })
+        
+        // Check if profile already exists
+        const { data: existingProfile } = await serverClient
+          .from('profiles')
+          .select('id')
+          .eq('id', data.user.id)
+          .single()
+        
+        // Only insert if profile doesn't exist
+        if (!existingProfile) {
+          await serverClient.from('profiles').insert({
+            id: data.user.id,
+            email: data.user.email,
+            credits_remaining: INITIAL_CREDITS
+          })
+        }
       }
       
       return handleCORS(NextResponse.json({
