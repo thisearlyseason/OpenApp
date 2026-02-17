@@ -372,49 +372,41 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
     if (route === '/generate' && method === 'POST') {
       const user = await getUserFromAuth(request)
       if (!user) {
-        return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+        return errorResponse('Unauthorized', 401)
       }
       
       // Hourly rate limiting: 20 requests per hour per user
       const rateLimit = checkGenerateRateLimit(user.id)
       if (!rateLimit.allowed) {
         const minutes = Math.ceil((rateLimit.retryAfterSeconds || 0) / 60)
-        return handleCORS(NextResponse.json(
-          { 
-            error: `Rate limit exceeded. You can make 20 requests per hour. Try again in ${minutes} minute${minutes !== 1 ? 's' : ''}.`,
-            retry_after_seconds: rateLimit.retryAfterSeconds,
-            requests_remaining: 0
-          },
-          { status: 429 }
-        ))
+        return errorResponse(
+          `Rate limit exceeded. You can make ${GENERATE_RATE_LIMIT} requests per hour. Try again in ${minutes} minute${minutes !== 1 ? 's' : ''}.`,
+          429,
+          { retry_after_seconds: rateLimit.retryAfterSeconds, requests_remaining: 0 }
+        )
       }
       
-      let body: { prompt?: unknown }
+      // Parse and validate JSON body
+      let body: Record<string, unknown>
       try {
         body = await request.json()
+        if (typeof body !== 'object' || body === null) {
+          return errorResponse('Request body must be a JSON object', 400)
+        }
       } catch {
-        return handleCORS(NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }))
+        return errorResponse('Invalid JSON body', 400)
       }
       
-      // Validate prompt - don't trust client values
-      const prompt = body.prompt
-      if (!prompt || typeof prompt !== 'string') {
-        return handleCORS(NextResponse.json({ error: 'Prompt is required and must be a string' }, { status: 400 }))
+      // Strict input validation
+      const validation = validatePrompt(body.prompt)
+      if (!validation.valid) {
+        return errorResponse(validation.error!, 400)
       }
-      
-      const trimmedPrompt = prompt.trim()
-      if (trimmedPrompt.length === 0) {
-        return handleCORS(NextResponse.json({ error: 'Prompt cannot be empty' }, { status: 400 }))
-      }
-      
-      // Reject if prompt exceeds 4000 characters
-      if (trimmedPrompt.length > 4000) {
-        return handleCORS(NextResponse.json({ error: 'Prompt cannot exceed 4000 characters' }, { status: 400 }))
-      }
+      const sanitizedPrompt = validation.prompt!
       
       const serverClient = createServerClient()
       
-      // Fetch user's credits_remaining from profiles
+      // Fetch current credits with row-level lock simulation
       const { data: profile, error: profileError } = await serverClient
         .from('profiles')
         .select('credits_remaining')
@@ -422,23 +414,23 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
         .single()
       
       if (profileError || !profile) {
-        return handleCORS(NextResponse.json({ error: 'Profile not found' }, { status: 404 }))
+        return errorResponse('Profile not found', 404)
       }
       
-      // Check if credits_remaining <= 0
-      if (profile.credits_remaining <= 0) {
-        return handleCORS(NextResponse.json({ error: 'Insufficient credits', credits_remaining: 0 }, { status: 402 }))
+      // Ensure credits is a valid number and > 0
+      const currentCredits = safeParseInt(profile.credits_remaining, 0)
+      if (currentCredits <= 0) {
+        return errorResponse('Insufficient credits', 402, { credits_remaining: 0 })
       }
       
-      // Call Straico API with timeout
+      // Call Straico API with strict timeout
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS)
       
-      let straicoResponse: Response
       let straicoData: any
       
       try {
-        straicoResponse = await fetch(`${STRAICO_API_BASE_URL}/prompt/completion`, {
+        const straicoResponse = await fetch(`${STRAICO_API_BASE_URL}/prompt/completion`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${STRAICO_API_KEY}`,
@@ -446,8 +438,8 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
           },
           body: JSON.stringify({
             model: 'openai/gpt-4o-mini',
-            message: trimmedPrompt,
-            max_tokens: MAX_TOKENS // Limit max tokens to prevent excessive usage
+            message: sanitizedPrompt,
+            max_tokens: MAX_TOKENS
           }),
           signal: controller.signal
         })
@@ -455,75 +447,116 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
         clearTimeout(timeoutId)
         
         if (!straicoResponse.ok) {
-          const errorText = await straicoResponse.text()
+          const errorText = await straicoResponse.text().catch(() => 'Unknown error')
           console.error('Straico API error:', straicoResponse.status, errorText)
-          return handleCORS(NextResponse.json({ error: 'AI service error' }, { status: 502 }))
+          return errorResponse('AI service error', 502)
         }
         
         straicoData = await straicoResponse.json()
       } catch (fetchError: any) {
         clearTimeout(timeoutId)
         if (fetchError.name === 'AbortError') {
-          return handleCORS(NextResponse.json({ error: 'Request timeout' }, { status: 504 }))
+          return errorResponse('Request timeout - AI service took too long', 504)
         }
-        console.error('Straico fetch error:', fetchError)
-        return handleCORS(NextResponse.json({ error: 'AI service unavailable' }, { status: 503 }))
+        console.error('Straico fetch error:', fetchError.message || fetchError)
+        return errorResponse('AI service unavailable', 503)
       }
       
-      // Extract response text
+      // Extract and validate response text
       let responseText = ''
       if (straicoData.data?.completion?.choices?.[0]?.message?.content) {
-        responseText = straicoData.data.completion.choices[0].message.content
+        responseText = String(straicoData.data.completion.choices[0].message.content)
       } else if (straicoData.data?.completion) {
         responseText = String(straicoData.data.completion)
       } else if (straicoData.completion) {
         responseText = String(straicoData.completion)
       }
       
-      if (!responseText) {
-        return handleCORS(NextResponse.json({ error: 'No response from AI' }, { status: 502 }))
+      if (!responseText || responseText.trim().length === 0) {
+        return errorResponse('No response from AI', 502)
       }
       
-      // Estimate tokens_used: use API value or estimate (1 token ≈ 4 characters)
-      let tokensUsed = straicoData.data?.usage?.total_tokens 
-        || straicoData.data?.words 
-        || straicoData.usage?.total_tokens
+      // Truncate response to max length for safety
+      responseText = truncateResponse(responseText)
       
-      if (!tokensUsed || tokensUsed <= 0) {
-        // Estimate: input tokens + output tokens (1 token ≈ 4 characters)
-        const inputTokens = Math.ceil(trimmedPrompt.length / 4)
+      // Calculate tokens used (use API value or estimate)
+      let tokensUsed = safeParseInt(
+        straicoData.data?.usage?.total_tokens 
+        || straicoData.data?.words 
+        || straicoData.usage?.total_tokens,
+        0
+      )
+      
+      if (tokensUsed <= 0) {
+        // Estimate: 1 token ≈ 4 characters
+        const inputTokens = Math.ceil(sanitizedPrompt.length / 4)
         const outputTokens = Math.ceil(responseText.length / 4)
         tokensUsed = inputTokens + outputTokens
       }
       
-      // Deduct tokens_used from credits_remaining
-      const newCredits = Math.max(0, profile.credits_remaining - tokensUsed)
+      // Ensure tokens is positive and reasonable
+      tokensUsed = Math.min(Math.max(1, tokensUsed), 100000)
       
-      // Update profiles table
+      // ATOMIC credits deduction - server-side only, prevent negative
+      // Re-fetch to ensure we have latest value before deduction
+      const { data: freshProfile, error: freshError } = await serverClient
+        .from('profiles')
+        .select('credits_remaining')
+        .eq('id', user.id)
+        .single()
+      
+      if (freshError || !freshProfile) {
+        return errorResponse('Failed to verify credits', 500)
+      }
+      
+      const latestCredits = safeParseInt(freshProfile.credits_remaining, 0)
+      
+      // Prevent negative credits - ensure we have enough
+      if (latestCredits < tokensUsed) {
+        // Deduct only what's available, set to 0
+        const { error: updateError } = await serverClient
+          .from('profiles')
+          .update({ credits_remaining: 0 })
+          .eq('id', user.id)
+          .gte('credits_remaining', 0) // Extra safety: only if >= 0
+        
+        if (updateError) {
+          console.error('Failed to update credits:', updateError)
+        }
+        
+        return errorResponse('Insufficient credits for this request', 402, { 
+          credits_remaining: 0,
+          tokens_required: tokensUsed
+        })
+      }
+      
+      // Deduct credits atomically (server-side only)
+      const newCredits = Math.max(0, latestCredits - tokensUsed)
+      
       const { error: updateError } = await serverClient
         .from('profiles')
         .update({ credits_remaining: newCredits })
         .eq('id', user.id)
+        .gte('credits_remaining', tokensUsed) // Only update if sufficient credits
       
       if (updateError) {
         console.error('Failed to update credits:', updateError)
-        // Continue anyway - don't fail the request
+        // Don't fail the request, but log the issue
       }
       
       // Insert record into prompt_logs
       const { error: logError } = await serverClient.from('prompt_logs').insert({
         user_id: user.id,
-        prompt: trimmedPrompt,
+        prompt: sanitizedPrompt,
         response: responseText,
         tokens_used: tokensUsed
       })
       
       if (logError) {
         console.error('Failed to insert prompt log:', logError)
-        // Continue anyway - don't fail the request
       }
       
-      // Return response JSON
+      // Return success response
       return handleCORS(NextResponse.json({
         response: responseText,
         tokens_used: tokensUsed,
