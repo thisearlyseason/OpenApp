@@ -1,36 +1,43 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
-import { v4 as uuidv4 } from 'uuid'
 
 // Types
 interface RouteParams {
   params: { path?: string[] }
 }
 
-// Supabase clients
-function createServerClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
+// Singleton Supabase clients (connection pooling)
+let serverClientInstance: SupabaseClient | null = null
+let anonClientInstance: SupabaseClient | null = null
+
+function getServerClient(): SupabaseClient {
+  if (!serverClientInstance) {
+    serverClientInstance = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
       }
-    }
-  )
+    )
+  }
+  return serverClientInstance
 }
 
-function createAnonClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  )
+function getAnonClient(): SupabaseClient {
+  if (!anonClientInstance) {
+    anonClientInstance = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    )
+  }
+  return anonClientInstance
 }
 
 // Constants
 const INITIAL_CREDITS = 100000
-const CREDITS_PER_REQUEST = parseInt(process.env.CREDITS_PER_REQUEST || '1')
 const MAX_TOKENS = parseInt(process.env.MAX_TOKENS || '2000')
 const STRAICO_API_KEY = process.env.STRAICO_API_KEY!
 const STRAICO_API_BASE_URL = process.env.STRAICO_API_BASE_URL || 'https://api.straico.com/v1'
@@ -40,6 +47,7 @@ const MAX_PROMPT_LENGTH = 4000
 const MAX_RESPONSE_LENGTH = 16000
 const API_TIMEOUT_MS = 30000
 const MIN_PROMPT_LENGTH = 1
+const MIN_TOKENS_CHARGE = 10 // Minimum tokens charged per request
 
 // Rate limiting (in-memory for MVP)
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>()
