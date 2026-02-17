@@ -582,116 +582,15 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
       }))
     }
 
-    // ============ PROMPT ENDPOINT (legacy) ============
-    
-    if (route === '/prompt' && method === 'POST') {
-      const user = await getUserFromAuth(request)
-      if (!user) {
-        return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
-      }
-      
-      // Rate limiting
-      const rateLimit = checkRateLimit(user.id)
-      if (!rateLimit.allowed) {
-        return handleCORS(NextResponse.json(
-          { error: 'Rate limit exceeded', retryAfter: rateLimit.retryAfter },
-          { status: 429 }
-        ))
-      }
-      
-      const body = await request.json()
-      const validation = validatePromptInput(body.prompt)
-      
-      if (!validation.valid) {
-        return handleCORS(NextResponse.json({ error: validation.error }, { status: 400 }))
-      }
-      
-      const serverClient = createServerClient()
-      
-      // Check credits from profiles table
-      const { data: profileData, error: profileError } = await serverClient
-        .from('profiles')
-        .select('credits_remaining')
-        .eq('id', user.id)
-        .single()
-      
-      if (profileError || !profileData) {
-        return handleCORS(NextResponse.json({ error: 'Unable to fetch credits' }, { status: 500 }))
-      }
-      
-      if (profileData.credits_remaining < CREDITS_PER_REQUEST) {
-        return handleCORS(NextResponse.json(
-          { error: 'Insufficient credits', credits: profileData.credits_remaining },
-          { status: 402 }
-        ))
-      }
-      
-      // Call Straico API
-      const straicoResponse = await fetch(`${STRAICO_API_BASE_URL}/prompt/completion`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${STRAICO_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'openai/gpt-4o-mini',
-          message: validation.prompt,
-          max_tokens: MAX_TOKENS
-        })
-      })
-      
-      if (!straicoResponse.ok) {
-        console.error('Straico API error:', await straicoResponse.text())
-        return handleCORS(NextResponse.json({ error: 'AI service error' }, { status: 502 }))
-      }
-      
-      const straicoData = await straicoResponse.json()
-      
-      // Extract response
-      let responseText = ''
-      if (straicoData.data?.completion?.choices?.[0]?.message?.content) {
-        responseText = straicoData.data.completion.choices[0].message.content
-      } else if (straicoData.data?.completion) {
-        responseText = String(straicoData.data.completion)
-      } else {
-        responseText = JSON.stringify(straicoData)
-      }
-      
-      // Get tokens used
-      const tokensUsed = straicoData.data?.words || 0
-      
-      // Deduct credits from profiles table
-      const newCredits = profileData.credits_remaining - CREDITS_PER_REQUEST
-      await serverClient
-        .from('profiles')
-        .update({ credits_remaining: newCredits })
-        .eq('id', user.id)
-      
-      // Store in prompt_logs table
-      await serverClient.from('prompt_logs').insert({
-        user_id: user.id,
-        prompt: validation.prompt,
-        response: responseText,
-        tokens_used: tokensUsed,
-        created_at: new Date().toISOString()
-      })
-      
-      return handleCORS(NextResponse.json({
-        response: responseText,
-        tokensUsed,
-        creditsRemaining: newCredits
-      }))
-    }
-
     // ============ HISTORY ENDPOINT ============
     
     if (route === '/history' && method === 'GET') {
       const user = await getUserFromAuth(request)
       if (!user) {
-        return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+        return errorResponse('Unauthorized', 401)
       }
       
-      const serverClient = createServerClient()
+      const serverClient = getServerClient()
       const { data, error } = await serverClient
         .from('prompt_logs')
         .select('id, prompt, response, tokens_used, created_at')
@@ -700,18 +599,18 @@ async function handleRoute(request: NextRequest, { params }: RouteParams) {
         .limit(50)
       
       if (error) {
-        return handleCORS(NextResponse.json({ error: 'Failed to fetch history' }, { status: 500 }))
+        return errorResponse('Failed to fetch history', 500)
       }
       
       return handleCORS(NextResponse.json({ history: data || [] }))
     }
 
     // Not found
-    return handleCORS(NextResponse.json({ error: `Route ${route} not found` }, { status: 404 }))
+    return errorResponse(`Route ${route} not found`, 404)
 
   } catch (error) {
     console.error('API Error:', error)
-    return handleCORS(NextResponse.json({ error: 'Internal server error' }, { status: 500 }))
+    return errorResponse('Internal server error', 500)
   }
 }
 
