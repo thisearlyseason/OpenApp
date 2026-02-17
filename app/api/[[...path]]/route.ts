@@ -40,6 +40,43 @@ const rateLimitMap = new Map<string, { count: number; resetTime: number }>()
 const RATE_LIMIT_WINDOW = 60000
 const MAX_REQUESTS_PER_WINDOW = 10
 
+// Hourly rate limiting for /api/generate (20 requests per hour per user)
+const generateRateLimitMap = new Map<string, number[]>()
+const GENERATE_RATE_LIMIT = 20
+const GENERATE_RATE_WINDOW = 60 * 60 * 1000 // 1 hour in milliseconds
+
+function checkGenerateRateLimit(userId: string): { allowed: boolean; remaining: number; retryAfterSeconds?: number } {
+  const now = Date.now()
+  const windowStart = now - GENERATE_RATE_WINDOW
+  
+  // Get existing timestamps or empty array
+  let timestamps = generateRateLimitMap.get(userId) || []
+  
+  // Filter to only timestamps within the last hour
+  timestamps = timestamps.filter(t => t > windowStart)
+  
+  // Check if limit exceeded
+  if (timestamps.length >= GENERATE_RATE_LIMIT) {
+    // Find oldest timestamp to calculate retry time
+    const oldestTimestamp = Math.min(...timestamps)
+    const retryAfterSeconds = Math.ceil((oldestTimestamp + GENERATE_RATE_WINDOW - now) / 1000)
+    return { 
+      allowed: false, 
+      remaining: 0, 
+      retryAfterSeconds 
+    }
+  }
+  
+  // Add current timestamp
+  timestamps.push(now)
+  generateRateLimitMap.set(userId, timestamps)
+  
+  return { 
+    allowed: true, 
+    remaining: GENERATE_RATE_LIMIT - timestamps.length 
+  }
+}
+
 // CORS helper
 function handleCORS(response: NextResponse): NextResponse {
   response.headers.set('Access-Control-Allow-Origin', process.env.CORS_ORIGINS || '*')
