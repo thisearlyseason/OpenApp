@@ -131,6 +131,8 @@ class BackendTester:
                     if "session" in data and data["session"]:
                         self.access_token = data["session"]["access_token"]
                         print(f"✅ Session created - Token available")
+                    else:
+                        print(f"⚠️  No session returned - likely needs email confirmation")
                     
                     return True
                 else:
@@ -138,7 +140,7 @@ class BackendTester:
                     return False
             else:
                 # Check if user already exists
-                if result["status_code"] == 400 and "already registered" in str(result["data"]).lower():
+                if result["status_code"] == 400 and ("already registered" in str(result["data"]).lower() or "already been registered" in str(result["data"]).lower()):
                     print("⚠️  User already exists, will test login instead")
                     return True
                 else:
