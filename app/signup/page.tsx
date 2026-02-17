@@ -32,32 +32,35 @@ export default function SignupPage() {
     setLoading(true)
 
     try {
-      const supabase = createClient()
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
+      // Call API for signup (handles profile creation)
+      const res = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
       })
 
-      if (error) {
-        setError(error.message)
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.error || 'Signup failed')
         return
       }
 
-      // If email confirmation is disabled, user will be logged in
+      // If we got a session, sign in via Supabase client to set cookies
       if (data.session) {
-        // Initialize credits via API
-        await fetch('/api/auth/signup', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password })
+        const supabase = createClient()
+        await supabase.auth.setSession({
+          access_token: data.session.access_token,
+          refresh_token: data.session.refresh_token
         })
         router.push('/dashboard')
         router.refresh()
       } else {
         setSuccess('Check your email to confirm your account, then login.')
       }
-    } catch (err) {
-      setError('An unexpected error occurred')
+    } catch (err: any) {
+      console.error('Signup error:', err)
+      setError(err.message || 'An unexpected error occurred')
     } finally {
       setLoading(false)
     }
@@ -69,7 +72,7 @@ export default function SignupPage() {
         <div className="bg-white/10 backdrop-blur rounded-2xl p-8">
           <div className="text-center mb-8">
             <h1 className="text-3xl font-bold text-white mb-2">Create Account</h1>
-            <p className="text-gray-400">Get started with 100 free credits</p>
+            <p className="text-gray-400">Get started with 100,000 free credits</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-6">
